@@ -1,0 +1,174 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Randomize
+#pragma kernel Cellular
+#pragma kernel DebugKernel
+#pragma kernel DebugGrowth
+#pragma kernel Set
+
+
+//variables
+RWTexture2D<float4> BufferTexture;
+RWTexture2D<float4> NewTexture;
+
+//Kernels
+int KernelAmount;
+int KernelSize;
+StructuredBuffer<float> Kernels;
+StructuredBuffer<float2> GrowthParameters;
+
+//used for set function
+uint2 SetPixel;
+
+//used for rand function
+float random;
+
+float gauss(float x, float m, float s)
+{
+    return exp(-pow((x - m) / s, 2) / 2);
+}
+
+float4 lerpColor(float value, float4 first, float4 second)
+{
+    return first + (second - first) * value;
+}
+
+float growth(float x, float m, float s)
+{
+    return gauss(x, m, s) * 2 - 1;
+}
+
+float rand(float2 co)
+{
+    return 0.5 + (frac(sin(dot(co.xy * random, float2(12.9898, 78.233))) * 43758.5453)) * 0.5;
+}
+
+float distance(float2 first, float2 second)
+{
+    return sqrt(pow((second.x - first.x), 2) + pow((second.y - first.y), 2));
+}
+
+float kernelPixel(uint2 pixel, int kernel)
+{
+    int textureWidth, textureHeight;
+    BufferTexture.GetDimensions((int) textureWidth, (int) textureHeight);
+    
+    int kernelLength = sqrt(KernelSize);
+    int kernelRadius = (kernelLength - 1) / 2;
+       
+    float sum;
+    for (int y = -kernelRadius; y <= kernelRadius; y++)
+    {
+        for (int x = -kernelRadius; x <= kernelRadius; x++)
+        {
+            int newX = pixel.x + x;
+            if (newX >= textureWidth)
+            {
+                newX = newX - textureWidth;
+            }
+            else if (newX < 0)
+            {
+                newX = newX + textureWidth;
+            }
+            
+            int newY = pixel.y + y;
+            if (newY >= textureWidth)
+            {
+                newY = newY - textureWidth;
+            }
+            else if (newY < 0)
+            {
+                newY = newY + textureWidth;
+            }
+            
+            int relKernelIndex = x + kernelRadius + (y + kernelRadius) * kernelLength;
+            sum += BufferTexture[int2(newX, newY)].w * Kernels[relKernelIndex + kernel * KernelSize];
+        }
+    }
+    return clamp(sum, 0, 1);
+    
+    /*
+    kernelSize = sqrt(kernelSize);
+    int kernelRadius = (kernelSize - 1) / 2;
+    
+    for (int y = -kernelRadius; y <= kernelRadius; y++)
+    {
+        for (int x = -kernelRadius; x <= kernelRadius; x++)
+        {
+            int newX = pixel.x + x;
+            if (newX >= textureWidth)
+            {
+                newX = newX - textureWidth;
+            }
+            else if (newX < 0)
+            {
+                newX = newX + textureWidth;
+            }
+            
+            int newY = pixel.y + y;
+            if (newY >= textureWidth)
+            {
+                newY = newY - textureWidth;
+            }
+            else if (newY < 0)
+            {
+                newY = newY + textureWidth;
+            }
+                
+            sum += BufferTexture[int2(newX, newY)].w * Kernel[x + kernelRadius + (y + kernelRadius) * kernelSize];
+        }
+    }
+    return clamp(sum, 0, 1);*/
+}
+
+[numthreads(8, 8, 1)]
+void Randomize(uint3 id : SV_DispatchThreadID)
+{
+    float rnd = rand(id.xy);
+    NewTexture[id.xy] = float4(1, 1, 1, rnd > .75 ? rnd : 0);
+}
+
+[numthreads(8, 8, 1)]
+void Cellular(uint3 id : SV_DispatchThreadID)
+{   
+    float growthSum;
+    for (int i = 0; i < KernelAmount; i++)
+    {
+        growthSum += growth(kernelPixel(id.xy, i), GrowthParameters[i].x, GrowthParameters[i].y);
+    }
+    
+    float avgGrowth = growthSum / KernelAmount;
+    float growth = clamp(BufferTexture[id.xy].w + avgGrowth * 0.1, 0, 1);
+    NewTexture[id.xy] = lerpColor(growth, float4(0, 0, 1, growth), float4(1, 0, 1, growth));
+}
+
+[numthreads(8, 8, 1)]
+void Set(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x == SetPixel.x && id.y == SetPixel.y)
+    {   
+        NewTexture[id.xy] = float4(1, 0, 1, 1);
+    }
+}
+
+int KernelToDebug;;
+[numthreads(8, 8, 1)]
+void DebugKernel(uint3 id : SV_DispatchThreadID)
+{
+    int kernelLength = sqrt(KernelSize);
+    
+    int relKernelIndex = id.x + id.y * kernelLength;
+    NewTexture[id.xy] = float4(1, 1, 1, Kernels[KernelToDebug * KernelSize + relKernelIndex] * kernelLength);
+}
+
+[numthreads(8, 8, 1)]
+void DebugGrowth(uint3 id : SV_DispatchThreadID)
+{
+    float growthSum;
+    for (int i = 0; i < KernelAmount; i++)
+    {
+        growthSum += growth(kernelPixel(id.xy, i), GrowthParameters[i].x, GrowthParameters[i].y);
+    }
+    
+    float avgGrowth = growthSum / KernelAmount;
+    NewTexture[id.xy] = float4(0, 1, avgGrowth == 1 ? 1 : 0, avgGrowth);
+}
